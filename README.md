@@ -24,21 +24,35 @@ Desktop-Assistant/
 │   └── sprites/               # Pixel-art expressions
 ├── docs/                      # Documentation
 ├── electron/
-│   ├── main.ts                # Electron main process (lifecycle & secure window setup)
-│   └── preload.ts             # Preload script exposing typed contextBridge API
+│   ├── native/
+│   │   └── WindowTracker.cs       # Lightweight Win32 foreground window tracker (DWM bounds, 0% CPU)
+│   ├── main.ts                    # Electron main process (lifecycle, top-right repositioning, context menu)
+│   └── preload.ts                 # Preload script exposing typed contextBridge API
 ├── scripts/
-│   └── dev.mjs                # Unified dev runner (Vite dev server + Electron)
+│   ├── build-native.mjs           # Native C# WindowTracker compiler via Windows csc.exe
+│   ├── dev.mjs                    # Unified dev runner (Vite dev server + Electron)
+│   └── verify-stage2.mjs          # Automated end-to-end verification runner
 ├── src/
 │   ├── components/
-│   │   ├── StatusCard.tsx     # Placeholder companion status card
-│   │   └── TitleBar.tsx       # Custom frameless titlebar with window controls
+│   │   ├── Avatar/
+│   │   │   ├── AvatarDisplay.tsx       # Pixel-art sprite renderer with crisp pixelated scaling
+│   │   │   ├── DialogueBubble.tsx      # Cartoon-style CSS speech bubble
+│   │   │   └── ExpressionControls.tsx  # Dev controls for switching between 4 expressions
+│   │   ├── Controls/
+│   │   │   ├── MicToggle.tsx           # Voice activation toggle with visual state indicator
+│   │   │   └── WindowControls.tsx      # Floating window controls (minimize, pin, close)
+│   │   └── Companion.tsx               # Orchestrating companion view
+│   ├── hooks/
+│   │   └── useAvatarState.ts           # Dedicated avatar state management hook
 │   ├── styles/
-│   │   ├── App.css            # Component and frame styling
-│   │   └── index.css          # Global resets and CSS variables
+│   │   ├── App.css                     # Companion & avatar styling, keyframe animations
+│   │   └── index.css                   # Global transparent background resets
 │   ├── types/
-│   │   └── electron.d.ts      # TypeScript ambient declarations for window.desktopAssistant
-│   ├── App.tsx                # Main application container
-│   └── main.tsx               # React DOM entry point
+│   │   ├── avatar.ts                   # Types and configurations for expressions & sprites
+│   │   └── electron.d.ts               # TypeScript ambient declarations for window.desktopAssistant
+│   ├── vite-env.d.ts                   # Asset import declarations
+│   ├── App.tsx                         # Main companion canvas
+│   └── main.tsx                        # React DOM entry point
 ├── index.html                 # Vite HTML template with Content Security Policy
 ├── package.json               # Dependencies, scripts, and build metadata
 ├── tsconfig.json              # TypeScript configuration for the React renderer
@@ -78,7 +92,13 @@ Runs Electron against the compiled production assets:
 npm start
 ```
 
-### 5. Package for Windows
+### 5. Automated Stage 2 Verification
+Runs automated in-process verification testing all 4 sprite loads, expression switching, dialogue updates, microphone toggle, and window transparency:
+```bash
+npm run test:stage2
+```
+
+### 6. Package for Windows
 Creates an installer / executable for Windows via `electron-builder`:
 ```bash
 # Package into distribution directory (quick test)
@@ -100,5 +120,7 @@ npm run package
 - **Configurable Window**:
   - Frameless (`frame: false`).
   - Transparent background (`transparent: true`, `backgroundColor: '#00000000'`).
-  - Compact size (350 × 400 px).
+  - Compact size (180 × 210 px; avatar scaled to ~105 × 105 px).
+  - Dynamic positioning: Automatically positions 20–25 px from the top-right corner of the active foreground application without stealing keyboard focus.
+  - Development tools: Expression dock hidden from normal UI, accessible via `Ctrl+Shift+D`, right-click context menu, or keys `1`-`4`.
   - Always-on-top is configurable in `electron/main.ts` (defaults to `false`).

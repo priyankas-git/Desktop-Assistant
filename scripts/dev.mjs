@@ -10,8 +10,12 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
 function compileElectron() {
-  console.log('[dev] Compiling Electron main and preload scripts...');
+  console.log('[dev] Compiling native helper and Electron scripts...');
   try {
+    execSync('node scripts/build-native.mjs', {
+      cwd: projectRoot,
+      stdio: 'inherit',
+    });
     execSync('npx tsc -p tsconfig.electron.json', {
       cwd: projectRoot,
       stdio: 'inherit',
