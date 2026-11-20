@@ -1,33 +1,56 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+export interface LifecycleActions {
+  setState: (state: 'sleeping' | 'awake') => Promise<void>;
+  getState: () => Promise<'sleeping' | 'awake'>;
+  onGoToSleep: (callback: () => void) => () => void;
+  onWakeUp: (callback: () => void) => () => void;
+}
+
 export interface WindowActions {
   minimize: () => void;
   close: () => void;
   isAlwaysOnTop: () => Promise<boolean>;
   setAlwaysOnTop: (flag: boolean) => Promise<boolean>;
-  showContextMenu: (currentExpression: string, isAlwaysOnTop: boolean) => void;
+  showContextMenu: (currentExpression: string, isAlwaysOnTop: boolean, isSleeping?: boolean) => void;
   onSetExpression: (callback: (expr: string) => void) => () => void;
   onAlwaysOnTopChanged: (callback: (pinned: boolean) => void) => () => void;
   onToggleDevControls: (callback: () => void) => () => void;
+  onManualSleep: (callback: () => void) => () => void;
 }
 
 export interface DesktopAssistantAPI {
   version: string;
   platform: string;
   windowActions: WindowActions;
+  lifecycle: LifecycleActions;
   getAppVersion: () => Promise<string>;
 }
 
 const api: DesktopAssistantAPI = {
   version: '0.1.0',
   platform: process.platform,
+  lifecycle: {
+    setState: (state: 'sleeping' | 'awake') => ipcRenderer.invoke('lifecycle:set-state', state),
+    getState: () => ipcRenderer.invoke('lifecycle:get-state'),
+    onGoToSleep: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('companion:go-to-sleep', handler);
+      return () => ipcRenderer.removeListener('companion:go-to-sleep', handler);
+    },
+    onWakeUp: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('companion:wake-up', handler);
+      return () => ipcRenderer.removeListener('companion:wake-up', handler);
+    },
+  },
   windowActions: {
     minimize: () => ipcRenderer.send('window:minimize'),
     close: () => ipcRenderer.send('window:close'),
     isAlwaysOnTop: () => ipcRenderer.invoke('window:get-always-on-top'),
     setAlwaysOnTop: (flag: boolean) => ipcRenderer.invoke('window:set-always-on-top', flag),
-    showContextMenu: (currentExpression: string, isAlwaysOnTop: boolean) => {
-      ipcRenderer.send('window:show-context-menu', currentExpression, isAlwaysOnTop);
+    showContextMenu: (currentExpression: string, isAlwaysOnTop: boolean, isSleeping?: boolean) => {
+      ipcRenderer.send('window:show-context-menu', currentExpression, isAlwaysOnTop, isSleeping);
     },
     onSetExpression: (callback: (expr: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, expr: string) => callback(expr);
@@ -43,6 +66,11 @@ const api: DesktopAssistantAPI = {
       const handler = () => callback();
       ipcRenderer.on('companion:toggle-dev-tools', handler);
       return () => ipcRenderer.removeListener('companion:toggle-dev-tools', handler);
+    },
+    onManualSleep: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('companion:go-to-sleep', handler);
+      return () => ipcRenderer.removeListener('companion:go-to-sleep', handler);
     },
   },
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),

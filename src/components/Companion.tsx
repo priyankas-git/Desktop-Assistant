@@ -7,30 +7,39 @@ import { MicToggle } from './Controls/MicToggle';
 
 export const Companion: React.FC = () => {
   const {
+    lifecycleState,
     expression,
     dialogueText,
+    isSleeping,
     isMicEnabled,
     showDevControls,
     isAlwaysOnTop,
     setExpression,
+    handleAvatarClick,
     toggleMic,
-    cycleNextExpression,
     toggleAlwaysOnTop,
     handleContextMenu,
+    recordActivity,
   } = useAvatarState();
 
   const handleMinimize = () => {
+    recordActivity();
     window.desktopAssistant?.windowActions?.minimize();
   };
 
   const handleClose = () => {
+    recordActivity();
     window.desktopAssistant?.windowActions?.close();
   };
 
   return (
     <div
-      className="companion-container companion-card"
+      className={`companion-container companion-card state-${lifecycleState} ${
+        isSleeping ? 'is-sleeping' : 'is-awake'
+      }`}
       onContextMenu={handleContextMenu}
+      onPointerDown={recordActivity}
+      onMouseMove={recordActivity}
     >
       {/* Subtle hover-only quick window controls */}
       <div className="hover-window-controls" aria-label="Window Actions">
@@ -70,7 +79,8 @@ export const Companion: React.FC = () => {
         <DialogueBubble text={dialogueText} />
         <AvatarDisplay
           expression={expression}
-          onAvatarClick={cycleNextExpression}
+          isSleeping={isSleeping}
+          onAvatarClick={handleAvatarClick}
         />
       </div>
 

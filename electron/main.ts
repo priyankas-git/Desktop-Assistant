@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, Menu, globalShortcut } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
@@ -38,6 +38,40 @@ export interface ForegroundWindowBounds {
 
 let mainWindow: BrowserWindow | null = null;
 let trackerProcess: ChildProcess | null = null;
+let companionState: 'sleeping' | 'awake' = 'sleeping';
+let lastForegroundBounds: ForegroundWindowBounds | null = null;
+
+/**
+ * Unobtrusive position for sleeping companion.
+ * Positioned in the bottom-right corner of the primary display work area with 20px padding.
+ */
+export function setSleepingPosition(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const workArea = primaryDisplay.workArea;
+  const compWidth = windowConfig.width;
+  const compHeight = windowConfig.height;
+
+  const padding = 20;
+  const targetX = workArea.x + workArea.width - compWidth - padding;
+  const targetY = workArea.y + workArea.height - compHeight - padding;
+
+  const minX = workArea.x;
+  const maxX = workArea.x + workArea.width - compWidth;
+  const minY = workArea.y;
+  const maxY = workArea.y + workArea.height - compHeight;
+
+  const clampedX = Math.round(Math.max(minX, Math.min(maxX, targetX)));
+  const clampedY = Math.round(Math.max(minY, Math.min(maxY, targetY)));
+
+  mainWindow.setBounds({
+    x: clampedX,
+    y: clampedY,
+    width: compWidth,
+    height: compHeight,
+  });
+}
 
 /**
  * Reposition companion relative to the active foreground application.
@@ -45,6 +79,11 @@ let trackerProcess: ChildProcess | null = null;
  */
 export function repositionRelativeToWindow(bounds: ForegroundWindowBounds): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  lastForegroundBounds = bounds;
+
+  // When sleeping, do not follow foreground windows across the screen
+  if (companionState === 'sleeping') return;
 
   const offset = 22; // 20–25 px offset from top and right edges
   const compWidth = windowConfig.width;
@@ -96,6 +135,18 @@ export function setInitialTopRightPosition(): void {
     width: compWidth,
     height: compHeight,
   });
+}
+
+/**
+ * Move companion to top-right of active foreground application or fallback to top-right of screen.
+ */
+export function moveToActiveForegroundOrTopRight(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (lastForegroundBounds) {
+    repositionRelativeToWindow(lastForegroundBounds);
+  } else {
+    setInitialTopRightPosition();
+  }
 }
 
 function getWindowTrackerExePath(): string {
@@ -191,10 +242,10 @@ function createWindow(): BrowserWindow {
     },
   });
 
-  // Gracefully reveal window without stealing keyboard focus
+  // Gracefully reveal window in unobtrusive sleeping position without stealing keyboard focus
   mainWindow.once('ready-to-show', () => {
     if (mainWindow) {
-      setInitialTopRightPosition();
+      setSleepingPosition();
       mainWindow.showInactive();
       startWindowTracker();
     }
@@ -216,27 +267,49 @@ function createWindow(): BrowserWindow {
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[main] Electron window content loaded successfully.');
 
-    if (process.env.STAGE2_VERIFY === 'true') {
-      console.log('[main] STAGE2_VERIFY active: running automated verification...');
+    const isVerify =
+      process.env.STAGE2_VERIFY?.trim() === 'true' ||
+      process.env.STAGE3_VERIFY?.trim() === 'true';
+    const isTestMode = process.env.APP_TEST_MODE?.trim() === 'true';
+
+    if (isVerify) {
+      console.log('[main] Automated verification active: executing test suite...');
       mainWindow?.webContents
         .executeJavaScript(
           `(${async () => {
             const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
             const results: Array<{ test: string; pass: boolean; actual: unknown }> = [];
 
-            // 1. Initial DOM and Dialogue Bubble
+            // 1. Initial State: Sleeping, dialogue "Zzz...", sleeping sprite
             const bubble = document.querySelector('.dialogue-text');
             if (!bubble) throw new Error('Dialogue bubble text element not found');
             const initialText = bubble.textContent?.trim();
             results.push({
-              test: 'Initial dialogue text',
-              pass: initialText === "Hey! I'm here.",
+              test: 'Initial dialogue text is "Zzz..."',
+              pass: initialText === 'Zzz...',
               actual: initialText,
             });
 
-            // 2. Avatar element & Size check (approximately 105 × 105 px)
             const avatarImg = document.querySelector('.pixel-avatar') as HTMLImageElement | null;
             if (!avatarImg) throw new Error('Pixel avatar image not found');
+            const initialSrc = avatarImg.src;
+            results.push({
+              test: 'Initial sprite is sleeping.png',
+              pass: initialSrc.toLowerCase().includes('sleeping'),
+              actual: initialSrc,
+            });
+
+            const winAny = window as any;
+            const initialLifecycle = typeof winAny.__GET_LIFECYCLE_STATE__ === 'function'
+              ? winAny.__GET_LIFECYCLE_STATE__()
+              : 'unknown';
+            results.push({
+              test: 'Initial lifecycle state is sleeping',
+              pass: initialLifecycle === 'sleeping',
+              actual: initialLifecycle,
+            });
+
+            // 2. Avatar dimensions & crisp pixelated style
             const rect = avatarImg.getBoundingClientRect();
             const widthOk = rect.width >= 95 && rect.width <= 115;
             const heightOk = rect.height >= 95 && rect.height <= 115;
@@ -256,7 +329,7 @@ function createWindow(): BrowserWindow {
               actual: imageRendering,
             });
 
-            // 3. Confirm dev controls are hidden by default in normal UI
+            // 3. Dev expression controls hidden by default
             const devControlsVisibleInitially = Boolean(document.querySelector('.expression-controls'));
             results.push({
               test: 'Dev expression controls hidden by default',
@@ -264,21 +337,166 @@ function createWindow(): BrowserWindow {
               actual: devControlsVisibleInitially ? 'visible' : 'hidden',
             });
 
-            // Reveal dev controls via dev mechanism
-            const winAny = window as any;
-            if (typeof winAny.__TOGGLE_DEV_CONTROLS__ === 'function') {
-              winAny.__TOGGLE_DEV_CONTROLS__();
-              await sleep(60);
-            }
+            // 4. Manual wake-up by clicking sleeping owl
+            const avatarDisplay = document.querySelector('.avatar-display') as HTMLElement | null;
+            if (!avatarDisplay) throw new Error('Avatar display container not found');
+            avatarDisplay.click();
+            await sleep(100);
 
-            const devControlsVisibleAfterToggle = Boolean(document.querySelector('.expression-controls'));
+            const awakeLifecycle = typeof winAny.__GET_LIFECYCLE_STATE__ === 'function'
+              ? winAny.__GET_LIFECYCLE_STATE__()
+              : 'unknown';
             results.push({
-              test: 'Dev expression controls revealed via dev toggle',
-              pass: devControlsVisibleAfterToggle,
-              actual: devControlsVisibleAfterToggle ? 'revealed' : 'still hidden',
+              test: 'Clicking sleeping owl transitions to awake state',
+              pass: awakeLifecycle === 'awake',
+              actual: awakeLifecycle,
             });
 
-            // 4. Test expression buttons & dialogue updates
+            const wokenDialogue = bubble.textContent?.trim();
+            results.push({
+              test: 'Awake dialogue is "I\'m here! What do you need?"',
+              pass: wokenDialogue === "I'm here! What do you need?",
+              actual: wokenDialogue,
+            });
+
+            const wokenSrc = avatarImg.src;
+            results.push({
+              test: 'Awake sprite uses listening expression',
+              pass: wokenSrc.toLowerCase().includes('listening'),
+              actual: wokenSrc,
+            });
+
+            // 5. Clicking owl while awake does NOT cycle randomly through expressions
+            avatarDisplay.click();
+            await sleep(80);
+            const afterClickDialogue = bubble.textContent?.trim();
+            const afterClickSrc = avatarImg.src;
+            results.push({
+              test: 'Clicking while awake does not cycle expression randomly',
+              pass: afterClickDialogue === "I'm here! What do you need?" && afterClickSrc.toLowerCase().includes('listening'),
+              actual: `dialogue="${afterClickDialogue}", src="${afterClickSrc}"`,
+            });
+
+            // 6. Automatic return to sleep on inactivity timeout
+            if (typeof winAny.__SET_IDLE_TIMEOUT_MS__ === 'function') {
+              winAny.__SET_IDLE_TIMEOUT_MS__(400); // 400ms for test
+            }
+            await sleep(650);
+
+            const autoSleepLifecycle = typeof winAny.__GET_LIFECYCLE_STATE__ === 'function'
+              ? winAny.__GET_LIFECYCLE_STATE__()
+              : 'unknown';
+            const autoSleepDialogue = bubble.textContent?.trim();
+            const autoSleepSrc = avatarImg.src;
+            results.push({
+              test: 'Inactivity timeout automatically returns to sleep',
+              pass: autoSleepLifecycle === 'sleeping' && autoSleepDialogue === 'Zzz...' && autoSleepSrc.toLowerCase().includes('sleeping'),
+              actual: `state=${autoSleepLifecycle}, dialogue="${autoSleepDialogue}"`,
+            });
+
+            // Reset timeout back to 30000ms
+            if (typeof winAny.__SET_IDLE_TIMEOUT_MS__ === 'function') {
+              winAny.__SET_IDLE_TIMEOUT_MS__(30000);
+            }
+
+            // 7. Clicking sleeping owl wakes it again
+            avatarDisplay.click();
+            await sleep(100);
+            const rewakeLifecycle = typeof winAny.__GET_LIFECYCLE_STATE__ === 'function'
+              ? winAny.__GET_LIFECYCLE_STATE__()
+              : 'unknown';
+            results.push({
+              test: 'Clicking sleeping owl wakes it again',
+              pass: rewakeLifecycle === 'awake' && bubble.textContent?.trim() === "I'm here! What do you need?",
+              actual: `state=${rewakeLifecycle}, dialogue="${bubble.textContent?.trim()}"`,
+            });
+
+            // 8. Manual sleep via keyboard shortcut (Ctrl+Shift+S)
+            const sleepEvent = new KeyboardEvent('keydown', {
+              key: 'S',
+              code: 'KeyS',
+              ctrlKey: true,
+              shiftKey: true,
+              bubbles: true,
+              cancelable: true,
+            });
+            window.dispatchEvent(sleepEvent);
+            await sleep(100);
+
+            const shortcutSleepLifecycle = typeof winAny.__GET_LIFECYCLE_STATE__ === 'function'
+              ? winAny.__GET_LIFECYCLE_STATE__()
+              : 'unknown';
+            results.push({
+              test: 'Ctrl+Shift+S triggers manual sleep',
+              pass: shortcutSleepLifecycle === 'sleeping' && bubble.textContent?.trim() === 'Zzz...',
+              actual: `state=${shortcutSleepLifecycle}, dialogue="${bubble.textContent?.trim()}"`,
+            });
+
+            // 9. Wake up again, then manual sleep via context menu handler
+            if (typeof winAny.__WAKE_UP__ === 'function') {
+              winAny.__WAKE_UP__();
+              await sleep(80);
+            }
+            if (typeof winAny.__GO_TO_SLEEP__ === 'function') {
+              winAny.__GO_TO_SLEEP__();
+              await sleep(80);
+            }
+            const manualSleepLifecycle = typeof winAny.__GET_LIFECYCLE_STATE__ === 'function'
+              ? winAny.__GET_LIFECYCLE_STATE__()
+              : 'unknown';
+            results.push({
+              test: 'Manual sleep action sets sleeping state',
+              pass: manualSleepLifecycle === 'sleeping' && bubble.textContent?.trim() === 'Zzz...',
+              actual: `state=${manualSleepLifecycle}`,
+            });
+
+            // 10. Microphone toggle & wake-up independence
+            const micBtn = document.querySelector('.mic-toggle-btn') as HTMLButtonElement | null;
+            if (!micBtn) throw new Error('Microphone toggle button not found');
+            const initialMicPressed = micBtn.getAttribute('aria-pressed') === 'true';
+
+            // Wake up while mic is disabled (verify mic disabled does not prevent wake-up)
+            avatarDisplay.click();
+            await sleep(100);
+            results.push({
+              test: 'Microphone disabled does not prevent manual activation',
+              pass: !initialMicPressed && winAny.__GET_LIFECYCLE_STATE__() === 'awake',
+              actual: `micPressed=${initialMicPressed}, state=${winAny.__GET_LIFECYCLE_STATE__()}`,
+            });
+
+            // Toggle mic on
+            micBtn.click();
+            await sleep(80);
+            const micOn = micBtn.getAttribute('aria-pressed') === 'true';
+            const tooltipOn = document.querySelector('.mic-tooltip')?.textContent?.trim();
+            results.push({
+              test: 'Microphone toggle enabled with tooltip',
+              pass: micOn && tooltipOn === 'Voice activation: ON',
+              actual: `micOn=${micOn}, tooltip="${tooltipOn}"`,
+            });
+
+            // Toggle mic back off
+            micBtn.click();
+            await sleep(80);
+            const micOff = micBtn.getAttribute('aria-pressed') === 'true';
+            results.push({
+              test: 'Microphone toggle reverted to disabled',
+              pass: !micOff,
+              actual: `micOff=${micOff}`,
+            });
+
+            // 11. Dev controls: reveal and test all 4 expressions
+            if (typeof winAny.__TOGGLE_DEV_CONTROLS__ === 'function') {
+              winAny.__TOGGLE_DEV_CONTROLS__();
+              await sleep(80);
+            }
+            const devControlsVisible = Boolean(document.querySelector('.expression-controls'));
+            results.push({
+              test: 'Dev expression controls revealed via dev toggle',
+              pass: devControlsVisible,
+              actual: devControlsVisible ? 'revealed' : 'hidden',
+            });
+
             const exprButtons = Array.from(document.querySelectorAll('.expr-btn')) as HTMLButtonElement[];
             const targetExpressions = [
               { label: 'Sleeping', text: 'Zzz...', fileMatch: 'sleeping' },
@@ -306,36 +524,7 @@ function createWindow(): BrowserWindow {
               });
             }
 
-            // 5. Test Microphone Toggle
-            const micBtn = document.querySelector('.mic-toggle-btn') as HTMLButtonElement | null;
-            if (!micBtn) throw new Error('Microphone toggle button not found');
-            const initialPressed = micBtn.getAttribute('aria-pressed') === 'true';
-            micBtn.click();
-            await sleep(80);
-            const toggledPressed = micBtn.getAttribute('aria-pressed') === 'true';
-            const tooltipText = document.querySelector('.mic-tooltip')?.textContent?.trim();
-            results.push({
-              test: 'Microphone toggle enabled',
-              pass: !initialPressed && toggledPressed,
-              actual: `initial=${initialPressed}, toggled=${toggledPressed}`,
-            });
-            results.push({
-              test: 'Microphone tooltip text',
-              pass: tooltipText === 'Voice activation: ON',
-              actual: tooltipText,
-            });
-
-            // Toggle back to off
-            micBtn.click();
-            await sleep(80);
-            const revertedPressed = micBtn.getAttribute('aria-pressed') === 'true';
-            results.push({
-              test: 'Microphone toggle reverted to disabled',
-              pass: !revertedPressed,
-              actual: revertedPressed,
-            });
-
-            // 6. Verify background transparency
+            // 12. Verify background transparency
             const bodyBg = window.getComputedStyle(document.body).backgroundColor;
             results.push({
               test: 'Body background transparent',
@@ -354,7 +543,23 @@ function createWindow(): BrowserWindow {
             if (!res.pass) allPassed = false;
           }
 
-          // Test window repositioning logic
+          // 13. Test Window Positioning in Main Process:
+          // A. Test Sleeping position calculation
+          companionState = 'sleeping';
+          setSleepingPosition();
+          const sleepingBounds = mainWindow?.getBounds();
+          const primaryDisplay = screen.getPrimaryDisplay();
+          const workArea = primaryDisplay.workArea;
+          const expectedSleepX = workArea.x + workArea.width - windowConfig.width - 20;
+          const expectedSleepY = workArea.y + workArea.height - windowConfig.height - 20;
+          const sleepPosOk =
+            Math.abs((sleepingBounds?.x ?? 0) - expectedSleepX) <= 2 &&
+            Math.abs((sleepingBounds?.y ?? 0) - expectedSleepY) <= 2;
+          console.log(`[${sleepPosOk ? 'PASS' : 'FAIL'}] Sleeping unobtrusive window position (Actual: x=${sleepingBounds?.x}, y=${sleepingBounds?.y}, Expected: x=${expectedSleepX}, y=${expectedSleepY})`);
+          if (!sleepPosOk) allPassed = false;
+
+          // B. Test Foreground window top-right repositioning when awake
+          companionState = 'awake';
           const simulatedBounds: ForegroundWindowBounds = {
             left: 200,
             top: 150,
@@ -362,20 +567,36 @@ function createWindow(): BrowserWindow {
             height: 700,
           };
           repositionRelativeToWindow(simulatedBounds);
-          const currentBounds = mainWindow?.getBounds();
+          const awakeBounds = mainWindow?.getBounds();
           const expectedTargetX = 200 + 1000 - windowConfig.width - 22; // 998
           const expectedTargetY = 150 + 22; // 172
-          const posOk =
-            Math.abs((currentBounds?.x ?? 0) - expectedTargetX) <= 2 &&
-            Math.abs((currentBounds?.y ?? 0) - expectedTargetY) <= 2;
+          const awakePosOk =
+            Math.abs((awakeBounds?.x ?? 0) - expectedTargetX) <= 2 &&
+            Math.abs((awakeBounds?.y ?? 0) - expectedTargetY) <= 2;
+          console.log(`[${awakePosOk ? 'PASS' : 'FAIL'}] Awake active application top-right repositioning (Actual: x=${awakeBounds?.x}, y=${awakeBounds?.y}, Expected: x=${expectedTargetX}, y=${expectedTargetY})`);
+          if (!awakePosOk) allPassed = false;
 
-          console.log(`[${posOk ? 'PASS' : 'FAIL'}] Foreground window top-right repositioning (Actual: x=${currentBounds?.x}, y=${currentBounds?.y}, Expected: x=${expectedTargetX}, y=${expectedTargetY})`);
-          if (!posOk) allPassed = false;
+          // C. Test that while sleeping, foreground changes do NOT move window
+          companionState = 'sleeping';
+          setSleepingPosition();
+          const beforeForeChange = mainWindow?.getBounds();
+          repositionRelativeToWindow({
+            left: 50,
+            top: 50,
+            width: 800,
+            height: 600,
+          });
+          const afterForeChange = mainWindow?.getBounds();
+          const staysInSleepPos =
+            beforeForeChange?.x === afterForeChange?.x &&
+            beforeForeChange?.y === afterForeChange?.y;
+          console.log(`[${staysInSleepPos ? 'PASS' : 'FAIL'}] Sleeping companion ignores foreground window movements`);
+          if (!staysInSleepPos) allPassed = false;
 
           const sizeOk =
-            Math.abs((currentBounds?.width ?? 0) - windowConfig.width) <= 2 &&
-            Math.abs((currentBounds?.height ?? 0) - windowConfig.height) <= 2;
-          console.log(`[${sizeOk ? 'PASS' : 'FAIL'}] Window dimensions ~180x210 (Actual: ${currentBounds?.width}x${currentBounds?.height})`);
+            Math.abs((sleepingBounds?.width ?? 0) - windowConfig.width) <= 2 &&
+            Math.abs((sleepingBounds?.height ?? 0) - windowConfig.height) <= 2;
+          console.log(`[${sizeOk ? 'PASS' : 'FAIL'}] Window dimensions ~180x210 (Actual: ${sleepingBounds?.width}x${sleepingBounds?.height})`);
           if (!sizeOk) allPassed = false;
 
           console.log('---------------------------------');
@@ -397,7 +618,7 @@ function createWindow(): BrowserWindow {
           console.error('[main] Verification suite encountered an error:', err);
           app.exit(1);
         });
-    } else if (process.env.APP_TEST_MODE === 'true') {
+    } else if (isTestMode) {
       console.log('[main] APP_TEST_MODE active: verifying renderer DOM...');
       mainWindow?.webContents
         .executeJavaScript(
@@ -460,8 +681,25 @@ ipcMain.handle('window:set-always-on-top', (_event, flag: boolean) => {
   return false;
 });
 
-ipcMain.on('window:show-context-menu', (_event, currentExpr: string, isAlwaysOnTop: boolean) => {
+// IPC handlers for lifecycle management
+ipcMain.handle('lifecycle:set-state', (_event, state: 'sleeping' | 'awake') => {
+  companionState = state;
+  if (state === 'sleeping') {
+    setSleepingPosition();
+  } else {
+    moveToActiveForegroundOrTopRight();
+  }
+  return companionState;
+});
+
+ipcMain.handle('lifecycle:get-state', () => {
+  return companionState;
+});
+
+ipcMain.on('window:show-context-menu', (_event, currentExpr: string, isAlwaysOnTop: boolean, isSleeping?: boolean) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const currentlySleeping = typeof isSleeping === 'boolean' ? isSleeping : companionState === 'sleeping';
 
   const menu = Menu.buildFromTemplate([
     {
@@ -474,6 +712,21 @@ ipcMain.on('window:show-context-menu', (_event, currentExpr: string, isAlwaysOnT
         mainWindow?.webContents.send('window:always-on-top-changed', next);
       },
     },
+    { type: 'separator' },
+    currentlySleeping
+      ? {
+          label: 'Wake up',
+          click: () => {
+            mainWindow?.webContents.send('companion:wake-up');
+          },
+        }
+      : {
+          label: 'Go to sleep',
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: () => {
+            mainWindow?.webContents.send('companion:go-to-sleep');
+          },
+        },
     { type: 'separator' },
     {
       label: 'Expressions',
@@ -530,6 +783,17 @@ ipcMain.handle('app:get-version', () => {
 app.whenReady().then(() => {
   createWindow();
 
+  // Register Ctrl+Shift+S global shortcut for manual sleep
+  try {
+    globalShortcut.register('CommandOrControl+Shift+S', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('companion:go-to-sleep');
+      }
+    });
+  } catch (err) {
+    console.warn('[main] Failed to register global shortcut CommandOrControl+Shift+S:', err);
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
@@ -540,10 +804,12 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
   stopWindowTracker();
 });
 
 app.on('window-all-closed', () => {
+  globalShortcut.unregisterAll();
   stopWindowTracker();
   if (process.platform !== 'darwin') {
     app.quit();

@@ -5,6 +5,8 @@ import speakingSprite from '../../assets/sprites/speaking.png';
 
 export type AvatarExpression = 'sleeping' | 'listening' | 'speaking' | 'happy';
 
+export type AvatarLifecycleState = 'sleeping' | 'awake' | 'listening' | 'speaking' | 'happy';
+
 export interface AvatarExpressionConfig {
   expression: AvatarExpression;
   label: string;
@@ -29,7 +31,7 @@ export const EXPRESSION_CONFIGS: Record<AvatarExpression, AvatarExpressionConfig
     expression: 'speaking',
     label: 'Speaking',
     spriteUrl: speakingSprite,
-    defaultDialogue: 'Okay! I\'m on it.',
+    defaultDialogue: "Okay! I'm on it.",
   },
   happy: {
     expression: 'happy',
@@ -39,5 +41,10 @@ export const EXPRESSION_CONFIGS: Record<AvatarExpression, AvatarExpressionConfig
   },
 };
 
-export const INITIAL_DIALOGUE = "Hey! I'm here.";
-export const INITIAL_EXPRESSION: AvatarExpression = 'happy';
+export const INITIAL_LIFECYCLE_STATE: AvatarLifecycleState = 'sleeping';
+export const INITIAL_EXPRESSION: AvatarExpression = 'sleeping';
+export const INITIAL_DIALOGUE = 'Zzz...';
+export const WAKE_DIALOGUE = "I'm here! What do you need?";
+export const SLEEP_DIALOGUE = 'Zzz...';
+export const DEFAULT_IDLE_TIMEOUT_MS = 30000;
+

@@ -43,7 +43,8 @@ Desktop-Assistant/
 │   │   │   └── WindowControls.tsx      # Floating window controls (minimize, pin, close)
 │   │   └── Companion.tsx               # Orchestrating companion view
 │   ├── hooks/
-│   │   └── useAvatarState.ts           # Dedicated avatar state management hook
+│   │   ├── useAvatarState.ts           # Centralized avatar lifecycle & state management
+│   │   └── useIdleTimer.ts             # Inactivity timer with interaction-aware resets
 │   ├── styles/
 │   │   ├── App.css                     # Companion & avatar styling, keyframe animations
 │   │   └── index.css                   # Global transparent background resets
@@ -92,9 +93,13 @@ Runs Electron against the compiled production assets:
 npm start
 ```
 
-### 5. Automated Stage 2 Verification
-Runs automated in-process verification testing all 4 sprite loads, expression switching, dialogue updates, microphone toggle, and window transparency:
+### 5. Automated Verification
+Runs automated end-to-end verification testing the full avatar lifecycle (sleeping on start, unobtrusive bottom-right placement, manual click wake-up with listening sprite & "I'm here! What do you need?", active window tracking, no random expression cycling while awake, inactivity auto-sleep, manual sleep via Ctrl+Shift+S & context menu, microphone independence, and expression dev controls):
 ```bash
+# Run Stage 3 verification (or npm test)
+npm run test:stage3
+
+# Stage 2 verification is also preserved
 npm run test:stage2
 ```
 
