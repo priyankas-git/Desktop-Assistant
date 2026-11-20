@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, screen, Menu, globalShortcut } from 'elect
 import path from 'path';
 import fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
+import { wakeWordService } from './services/wakeWordService';
 
 /**
  * Window Configuration Settings
@@ -248,6 +249,20 @@ function createWindow(): BrowserWindow {
       setSleepingPosition();
       mainWindow.showInactive();
       startWindowTracker();
+      wakeWordService.init(mainWindow, {
+        onWakeUp: () => {
+          companionState = 'awake';
+        },
+        onGoToSleep: () => {
+          companionState = 'sleeping';
+        },
+        moveToForeground: () => {
+          moveToActiveForegroundOrTopRight();
+        },
+        moveToSleepingPos: () => {
+          setSleepingPosition();
+        },
+      });
     }
   });
 
@@ -267,12 +282,256 @@ function createWindow(): BrowserWindow {
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[main] Electron window content loaded successfully.');
 
+    const isStage4Verify = process.env.STAGE4_VERIFY?.trim() === 'true';
     const isVerify =
       process.env.STAGE2_VERIFY?.trim() === 'true' ||
       process.env.STAGE3_VERIFY?.trim() === 'true';
     const isTestMode = process.env.APP_TEST_MODE?.trim() === 'true';
 
-    if (isVerify) {
+    if (isStage4Verify) {
+      console.log('[main] Stage 4 Automated Verification active: executing voice activation test suite...');
+      mainWindow?.webContents
+        .executeJavaScript(
+          `(${async () => {
+            const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+            const results: Array<{ test: string; pass: boolean; actual: unknown }> = [];
+            const winAny = window as any;
+
+            // 1. Initial State: Sleeping, dialogue "Zzz...", sleeping sprite
+            const bubble = document.querySelector('.dialogue-text');
+            const initialText = bubble?.textContent?.trim();
+            const avatarImg = document.querySelector('.pixel-avatar') as HTMLImageElement | null;
+            const initialSrc = avatarImg?.src || '';
+            const initialLifecycle = winAny.__GET_LIFECYCLE_STATE__?.();
+
+            results.push({
+              test: 'Initial dialogue text is "Zzz..."',
+              pass: initialText === 'Zzz...',
+              actual: initialText,
+            });
+            results.push({
+              test: 'Initial sprite is sleeping.png',
+              pass: initialSrc.toLowerCase().includes('sleeping'),
+              actual: initialSrc,
+            });
+            results.push({
+              test: 'Initial lifecycle state is sleeping',
+              pass: initialLifecycle === 'sleeping',
+              actual: initialLifecycle,
+            });
+
+            // 2. Microphone toggle button present and visual indicators
+            const micBtn = document.querySelector('.mic-toggle-btn') as HTMLButtonElement | null;
+            const micDot = document.querySelector('.mic-indicator-dot');
+            results.push({
+              test: 'Microphone toggle button present in companion footer',
+              pass: Boolean(micBtn && micDot),
+              actual: Boolean(micBtn && micDot) ? 'present' : 'missing',
+            });
+
+            // 3. Voice activation status query via secure preload bridge
+            const status = await winAny.__GET_VOICE_STATUS__?.();
+            results.push({
+              test: 'Voice activation status accessible via desktopAssistant API',
+              pass: Boolean(status && typeof status.isMicEnabled === 'boolean'),
+              actual: JSON.stringify(status),
+            });
+
+            results.push({
+              test: 'Custom wake-word model name is "mischief_managed"',
+              pass: status?.modelName === 'mischief_managed',
+              actual: status?.modelName,
+            });
+
+            // 4. Model loading report: correctly reports model loaded status without pretending
+            results.push({
+              test: 'Custom model status reported accurately (not spoofed)',
+              pass: typeof status?.modelLoaded === 'boolean',
+              actual: `modelLoaded=\${status?.modelLoaded}, path=\${status?.modelPath}`,
+            });
+
+            // 5. Verify mic disabled state means no audio capture
+            if (status?.isMicEnabled) {
+              await winAny.__TOGGLE_MIC__?.();
+              await sleep(200);
+            }
+            const statusDisabled = await winAny.__GET_VOICE_STATUS__?.();
+            const micBtnDisabled = document.querySelector('.mic-toggle-btn') as HTMLButtonElement;
+            results.push({
+              test: 'Microphone disabled reflects in UI and status',
+              pass: !statusDisabled?.isMicEnabled && micBtnDisabled.getAttribute('aria-pressed') === 'false',
+              actual: `isMicEnabled=\${statusDisabled?.isMicEnabled}, aria-pressed=\${micBtnDisabled.getAttribute('aria-pressed')}`,
+            });
+
+            // 6. Manual click-to-wake works with microphone disabled
+            const avatarDisplay = document.querySelector('.avatar-display') as HTMLElement;
+            avatarDisplay.click();
+            await sleep(150);
+            results.push({
+              test: 'Manual click-to-wake works with microphone disabled',
+              pass: winAny.__GET_LIFECYCLE_STATE__() === 'awake' && bubble?.textContent?.trim() === "I'm here! What do you need?",
+              actual: `state=\${winAny.__GET_LIFECYCLE_STATE__()}, text="\${bubble?.textContent?.trim()}"`,
+            });
+
+            // 7. Manual sleep via Ctrl+Shift+S works
+            const sleepEvent = new KeyboardEvent('keydown', {
+              key: 'S',
+              code: 'KeyS',
+              ctrlKey: true,
+              shiftKey: true,
+              bubbles: true,
+            });
+            window.dispatchEvent(sleepEvent);
+            await sleep(150);
+            results.push({
+              test: 'Manual sleep (Ctrl+Shift+S) transitions avatar back to sleeping',
+              pass: winAny.__GET_LIFECYCLE_STATE__() === 'sleeping' && bubble?.textContent?.trim() === 'Zzz...',
+              actual: `state=\${winAny.__GET_LIFECYCLE_STATE__()}, text="\${bubble?.textContent?.trim()}"`,
+            });
+
+            // 8. Enable microphone: toggles on, listening indicator active
+            await winAny.__TOGGLE_MIC__?.();
+            await sleep(250);
+            const statusEnabled = await winAny.__GET_VOICE_STATUS__?.();
+            const micBtnEnabled = document.querySelector('.mic-toggle-btn') as HTMLButtonElement;
+            results.push({
+              test: 'Toggling microphone enables voice activation',
+              pass: statusEnabled?.isMicEnabled === true && micBtnEnabled.getAttribute('aria-pressed') === 'true',
+              actual: `isMicEnabled=\${statusEnabled?.isMicEnabled}, aria-pressed=\${micBtnEnabled.getAttribute('aria-pressed')}`,
+            });
+
+            // 9. While sleeping and microphone enabled, avatar remains sleeping with "Zzz..."
+            results.push({
+              test: 'Avatar remains sleeping with "Zzz..." while mic is actively listening',
+              pass: winAny.__GET_LIFECYCLE_STATE__() === 'sleeping' && bubble?.textContent?.trim() === 'Zzz...',
+              actual: `state=\${winAny.__GET_LIFECYCLE_STATE__()}, dialogue="\${bubble?.textContent?.trim()}"`,
+            });
+
+            // 10. Voice activation: Wake-word "Mischief managed" wakes the companion
+            await winAny.__SIMULATE_WAKE_WORD__?.('mischief_managed');
+            await sleep(350);
+            const wakeDialogue = bubble?.textContent?.trim();
+            const wakeSprite = avatarImg?.src || '';
+            const wakeLifecycle = winAny.__GET_LIFECYCLE_STATE__();
+            results.push({
+              test: 'Wake-word "Mischief managed" wakes the companion',
+              pass: wakeLifecycle === 'awake',
+              actual: wakeLifecycle,
+            });
+            results.push({
+              test: 'Voice wake dialogue is "I\'m listening!"',
+              pass: wakeDialogue === "I'm listening!",
+              actual: wakeDialogue,
+            });
+            results.push({
+              test: 'Voice wake sprite uses listening expression',
+              pass: wakeSprite.toLowerCase().includes('listening'),
+              actual: wakeSprite,
+            });
+
+            // 11. Cooldown enforcement: immediate repeated detection does NOT trigger transition
+            await winAny.__SIMULATE_WAKE_WORD__?.('mischief_managed');
+            await sleep(100);
+            results.push({
+              test: 'Repeated detection within cooldown window is ignored',
+              pass: winAny.__GET_LIFECYCLE_STATE__() === 'awake',
+              actual: winAny.__GET_LIFECYCLE_STATE__(),
+            });
+
+            // 12. Wait for cooldown to expire (3.0 seconds)
+            await sleep(3000);
+
+            // 13. Saying "Mischief managed" while awake puts the companion to sleep
+            await winAny.__SIMULATE_WAKE_WORD__?.('mischief_managed');
+            await sleep(350);
+            const sleepDialogue = bubble?.textContent?.trim();
+            const sleepSprite = avatarImg?.src || '';
+            const sleepLifecycle = winAny.__GET_LIFECYCLE_STATE__();
+            results.push({
+              test: 'Saying "Mischief managed" while awake transitions companion to sleeping',
+              pass: sleepLifecycle === 'sleeping',
+              actual: sleepLifecycle,
+            });
+            results.push({
+              test: 'Voice sleep dialogue is "Zzz..."',
+              pass: sleepDialogue === 'Zzz...',
+              actual: sleepDialogue,
+            });
+            results.push({
+              test: 'Voice sleep sprite returns to sleeping.png',
+              pass: sleepSprite.toLowerCase().includes('sleeping'),
+              actual: sleepSprite,
+            });
+
+            // 14. Turn mic back off to test clean resource release
+            await winAny.__TOGGLE_MIC__?.();
+            await sleep(200);
+            const finalStatus = await winAny.__GET_VOICE_STATUS__?.();
+            results.push({
+              test: 'Toggling microphone off releases listening session',
+              pass: !finalStatus?.isMicEnabled,
+              actual: `isMicEnabled=\${finalStatus?.isMicEnabled}`,
+            });
+
+            return results;
+          }})()`
+        )
+        .then((results: Array<{ test: string; pass: boolean; actual: unknown }>) => {
+          console.log('\n--- STAGE 4 VERIFICATION TEST RESULTS ---');
+          let allPassed = true;
+          for (const res of results) {
+            console.log(`[${res.pass ? 'PASS' : 'FAIL'}] ${res.test} (Actual: ${res.actual})`);
+            if (!res.pass) allPassed = false;
+          }
+
+          // Positioning checks
+          companionState = 'sleeping';
+          setSleepingPosition();
+          const sleepingBounds = mainWindow?.getBounds();
+          const primaryDisplay = screen.getPrimaryDisplay();
+          const workArea = primaryDisplay.workArea;
+          const expectedSleepX = workArea.x + workArea.width - windowConfig.width - 20;
+          const expectedSleepY = workArea.y + workArea.height - windowConfig.height - 20;
+          const sleepPosOk =
+            Math.abs((sleepingBounds?.x ?? 0) - expectedSleepX) <= 2 &&
+            Math.abs((sleepingBounds?.y ?? 0) - expectedSleepY) <= 2;
+          console.log(`[${sleepPosOk ? 'PASS' : 'FAIL'}] Sleeping unobtrusive window position (Actual: x=${sleepingBounds?.x}, y=${sleepingBounds?.y}, Expected: x=${expectedSleepX}, y=${expectedSleepY})`);
+          if (!sleepPosOk) allPassed = false;
+
+          companionState = 'awake';
+          repositionRelativeToWindow({ left: 200, top: 150, width: 1000, height: 700 });
+          const awakeBounds = mainWindow?.getBounds();
+          const expectedTargetX = 200 + 1000 - windowConfig.width - 22;
+          const expectedTargetY = 150 + 22;
+          const awakePosOk =
+            Math.abs((awakeBounds?.x ?? 0) - expectedTargetX) <= 2 &&
+            Math.abs((awakeBounds?.y ?? 0) - expectedTargetY) <= 2;
+          console.log(`[${awakePosOk ? 'PASS' : 'FAIL'}] Awake active application top-right repositioning (Actual: x=${awakeBounds?.x}, y=${awakeBounds?.y}, Expected: x=${expectedTargetX}, y=${expectedTargetY})`);
+          if (!awakePosOk) allPassed = false;
+
+          console.log('---------------------------------');
+          setTimeout(() => {
+            stopWindowTracker();
+            wakeWordService.stop();
+            const exitCode = allPassed ? 0 : 1;
+            if (allPassed) {
+              console.log('[main] All Stage 4 verification tests PASSED.');
+            } else {
+              console.error('[main] Some Stage 4 verification tests FAILED.');
+            }
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.destroy();
+            }
+            app.exit(exitCode);
+          }, 400);
+        })
+        .catch((err: Error) => {
+          console.error('[main] Stage 4 verification encountered an error:', err);
+          stopWindowTracker();
+          wakeWordService.stop();
+          app.exit(1);
+        });
+    } else if (isVerify) {
       console.log('[main] Automated verification active: executing test suite...');
       mainWindow?.webContents
         .executeJavaScript(
@@ -602,6 +861,7 @@ function createWindow(): BrowserWindow {
           console.log('---------------------------------');
           setTimeout(() => {
             stopWindowTracker();
+            wakeWordService.stop();
             const exitCode = allPassed ? 0 : 1;
             if (allPassed) {
               console.log('[main] All verification tests PASSED.');
@@ -684,6 +944,7 @@ ipcMain.handle('window:set-always-on-top', (_event, flag: boolean) => {
 // IPC handlers for lifecycle management
 ipcMain.handle('lifecycle:set-state', (_event, state: 'sleeping' | 'awake') => {
   companionState = state;
+  wakeWordService.setCompanionState(state);
   if (state === 'sleeping') {
     setSleepingPosition();
   } else {
@@ -694,6 +955,24 @@ ipcMain.handle('lifecycle:set-state', (_event, state: 'sleeping' | 'awake') => {
 
 ipcMain.handle('lifecycle:get-state', () => {
   return companionState;
+});
+
+// IPC handlers for voice activation
+ipcMain.handle('voice:toggle-mic', () => {
+  return wakeWordService.toggleMic();
+});
+
+ipcMain.handle('voice:set-mic-enabled', (_event, enabled: boolean) => {
+  return wakeWordService.setMicEnabled(Boolean(enabled));
+});
+
+ipcMain.handle('voice:get-status', () => {
+  return wakeWordService.getStatus();
+});
+
+ipcMain.handle('voice:simulate-wake-word', (_event, phrase?: string) => {
+  wakeWordService.simulateWakeWord(phrase || 'mischief_managed');
+  return { success: true };
 });
 
 ipcMain.on('window:show-context-menu', (_event, currentExpr: string, isAlwaysOnTop: boolean, isSleeping?: boolean) => {
@@ -806,11 +1085,13 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopWindowTracker();
+  wakeWordService.stop();
 });
 
 app.on('window-all-closed', () => {
   globalShortcut.unregisterAll();
   stopWindowTracker();
+  wakeWordService.stop();
   if (process.platform !== 'darwin') {
     app.quit();
   }

@@ -45,6 +45,7 @@ export const INITIAL_LIFECYCLE_STATE: AvatarLifecycleState = 'sleeping';
 export const INITIAL_EXPRESSION: AvatarExpression = 'sleeping';
 export const INITIAL_DIALOGUE = 'Zzz...';
 export const WAKE_DIALOGUE = "I'm here! What do you need?";
+export const VOICE_WAKE_DIALOGUE = "I'm listening!";
 export const SLEEP_DIALOGUE = 'Zzz...';
 export const DEFAULT_IDLE_TIMEOUT_MS = 30000;
 

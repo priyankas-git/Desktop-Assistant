@@ -7,6 +7,7 @@ import {
   INITIAL_EXPRESSION,
   INITIAL_LIFECYCLE_STATE,
   WAKE_DIALOGUE,
+  VOICE_WAKE_DIALOGUE,
   SLEEP_DIALOGUE,
   DEFAULT_IDLE_TIMEOUT_MS,
 } from '../types/avatar';
@@ -19,10 +20,11 @@ export interface UseAvatarStateReturn {
   isSleeping: boolean;
   isAwake: boolean;
   isMicEnabled: boolean;
+  isListening: boolean;
   showDevControls: boolean;
   isAlwaysOnTop: boolean;
   idleTimeoutMs: number;
-  wakeUp: () => void;
+  wakeUp: (voiceActivated?: boolean) => void;
   goToSleep: () => void;
   handleAvatarClick: () => void;
   setExpression: (expr: AvatarExpression) => void;
@@ -41,6 +43,7 @@ export function useAvatarState(): UseAvatarStateReturn {
   const [expression, setExpressionState] = useState<AvatarExpression>(INITIAL_EXPRESSION);
   const [dialogueText, setDialogueText] = useState<string>(INITIAL_DIALOGUE);
   const [isMicEnabled, setIsMicEnabled] = useState<boolean>(false);
+  const [isListening, setIsListening] = useState<boolean>(false);
   const [showDevControls, setShowDevControls] = useState<boolean>(false);
   const [isAlwaysOnTop, setIsAlwaysOnTop] = useState<boolean>(false);
 
@@ -66,17 +69,17 @@ export function useAvatarState(): UseAvatarStateReturn {
     onIdle: goToSleep,
   });
 
-  const wakeUp = useCallback(() => {
+  const wakeUp = useCallback((voiceActivated: boolean = false) => {
     setLifecycleState('awake');
     setExpressionState('listening');
-    setDialogueText(WAKE_DIALOGUE);
+    setDialogueText(voiceActivated ? VOICE_WAKE_DIALOGUE : WAKE_DIALOGUE);
     notifyLifecycleChange('awake');
     idleTimer.resetTimer();
   }, [notifyLifecycleChange, idleTimer]);
 
   const handleAvatarClick = useCallback(() => {
     if (lifecycleState === 'sleeping') {
-      wakeUp();
+      wakeUp(false);
     } else {
       // In awake state, clicking the owl must NOT cycle randomly through expressions.
       // It counts as an interaction that resets the inactivity timer.
@@ -98,9 +101,19 @@ export function useAvatarState(): UseAvatarStateReturn {
     }
   }, [notifyLifecycleChange, idleTimer]);
 
-  const toggleMic = useCallback(() => {
-    setIsMicEnabled((prev) => !prev);
+  const toggleMic = useCallback(async () => {
     idleTimer.recordActivity();
+    if (window.desktopAssistant?.voiceActivation?.toggleMic) {
+      try {
+        const nextState = await window.desktopAssistant.voiceActivation.toggleMic();
+        setIsMicEnabled(Boolean(nextState));
+      } catch (err) {
+        console.error('[useAvatarState] Failed to toggle mic:', err);
+        setIsMicEnabled((prev) => !prev);
+      }
+    } else {
+      setIsMicEnabled((prev) => !prev);
+    }
   }, [idleTimer]);
 
   const toggleDevControls = useCallback(() => {
@@ -125,11 +138,20 @@ export function useAvatarState(): UseAvatarStateReturn {
     }
   }, [expression, isAlwaysOnTop, isSleeping, idleTimer]);
 
-  // Initial check for always on top status
+  // Initial check for always on top status and persisted voice activation status
   useEffect(() => {
     if (window.desktopAssistant?.windowActions?.isAlwaysOnTop) {
       window.desktopAssistant.windowActions.isAlwaysOnTop().then((pinned) => {
         setIsAlwaysOnTop(Boolean(pinned));
+      });
+    }
+
+    if (window.desktopAssistant?.voiceActivation?.getStatus) {
+      window.desktopAssistant.voiceActivation.getStatus().then((status) => {
+        if (status) {
+          setIsMicEnabled(Boolean(status.isMicEnabled));
+          setIsListening(Boolean(status.isListening));
+        }
       });
     }
   }, []);
@@ -158,8 +180,17 @@ export function useAvatarState(): UseAvatarStateReturn {
       goToSleep();
     });
 
-    const unsubWakeUp = window.desktopAssistant?.lifecycle?.onWakeUp?.(() => {
-      wakeUp();
+    const unsubWakeUp = window.desktopAssistant?.lifecycle?.onWakeUp?.((info) => {
+      wakeUp(Boolean(info?.voiceActivated));
+    });
+
+    const unsubStatus = window.desktopAssistant?.voiceActivation?.onStatusChanged?.((status) => {
+      setIsMicEnabled(Boolean(status.isMicEnabled));
+      setIsListening(Boolean(status.isListening));
+    });
+
+    const unsubWakeWord = window.desktopAssistant?.voiceActivation?.onWakeWordDetected?.(() => {
+      idleTimer.recordActivity();
     });
 
     return () => {
@@ -169,8 +200,10 @@ export function useAvatarState(): UseAvatarStateReturn {
       unsubManualSleep?.();
       unsubGoToSleep?.();
       unsubWakeUp?.();
+      unsubStatus?.();
+      unsubWakeWord?.();
     };
-  }, [setExpression, goToSleep, wakeUp]);
+  }, [setExpression, goToSleep, wakeUp, idleTimer]);
 
   // Keyboard shortcut listener:
   // Ctrl+Shift+S -> manual sleep
@@ -211,9 +244,18 @@ export function useAvatarState(): UseAvatarStateReturn {
       idleTimer.setTimeoutMs(ms);
     };
     window.__GET_LIFECYCLE_STATE__ = () => lifecycleState;
-    window.__WAKE_UP__ = () => wakeUp();
+    window.__WAKE_UP__ = (voiceActivated?: boolean) => wakeUp(voiceActivated);
     window.__GO_TO_SLEEP__ = () => goToSleep();
     window.__RESET_IDLE_TIMER__ = () => idleTimer.resetTimer();
+    window.__SIMULATE_WAKE_WORD__ = (phrase?: string) => {
+      return window.desktopAssistant?.voiceActivation?.simulateWakeWord?.(phrase) ?? Promise.resolve();
+    };
+    window.__GET_VOICE_STATUS__ = () => {
+      return window.desktopAssistant?.voiceActivation?.getStatus?.() ?? Promise.resolve(undefined);
+    };
+    window.__TOGGLE_MIC__ = () => {
+      return window.desktopAssistant?.voiceActivation?.toggleMic?.() ?? Promise.resolve(undefined);
+    };
 
     return () => {
       delete window.__TOGGLE_DEV_CONTROLS__;
@@ -223,6 +265,9 @@ export function useAvatarState(): UseAvatarStateReturn {
       delete window.__WAKE_UP__;
       delete window.__GO_TO_SLEEP__;
       delete window.__RESET_IDLE_TIMER__;
+      delete window.__SIMULATE_WAKE_WORD__;
+      delete window.__GET_VOICE_STATUS__;
+      delete window.__TOGGLE_MIC__;
     };
   }, [setExpression, idleTimer, lifecycleState, wakeUp, goToSleep]);
 
@@ -233,6 +278,7 @@ export function useAvatarState(): UseAvatarStateReturn {
     isSleeping,
     isAwake,
     isMicEnabled,
+    isListening,
     showDevControls,
     isAlwaysOnTop,
     idleTimeoutMs: idleTimer.timeoutMs,

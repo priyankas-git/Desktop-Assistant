@@ -12,6 +12,7 @@ export const Companion: React.FC = () => {
     dialogueText,
     isSleeping,
     isMicEnabled,
+    isListening,
     showDevControls,
     isAlwaysOnTop,
     setExpression,
@@ -86,7 +87,7 @@ export const Companion: React.FC = () => {
 
       {/* Microphone toggle beneath owl */}
       <div className="companion-footer">
-        <MicToggle isEnabled={isMicEnabled} onToggle={toggleMic} />
+        <MicToggle isEnabled={isMicEnabled} isListening={isListening} onToggle={toggleMic} />
       </div>
 
       {/* Development-only expression switcher (hidden by default, revealed via Ctrl+Shift+D or menu) */}

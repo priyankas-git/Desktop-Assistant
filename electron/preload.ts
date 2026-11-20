@@ -3,8 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 export interface LifecycleActions {
   setState: (state: 'sleeping' | 'awake') => Promise<void>;
   getState: () => Promise<'sleeping' | 'awake'>;
-  onGoToSleep: (callback: () => void) => () => void;
-  onWakeUp: (callback: () => void) => () => void;
+  onGoToSleep: (callback: (info?: { voiceActivated?: boolean }) => void) => () => void;
+  onWakeUp: (callback: (info?: { voiceActivated?: boolean }) => void) => () => void;
 }
 
 export interface WindowActions {
@@ -19,11 +19,39 @@ export interface WindowActions {
   onManualSleep: (callback: () => void) => () => void;
 }
 
+export interface VoiceActivationStatus {
+  isMicEnabled: boolean;
+  isListening: boolean;
+  modelLoaded: boolean;
+  modelName: string;
+  modelPath: string | null;
+  error?: string | null;
+  activeDevice?: string;
+}
+
+export interface WakeWordDetectionData {
+  wakeWord: string;
+  score: number;
+  state: 'sleeping' | 'awake';
+  simulated?: boolean;
+  timestamp: number;
+}
+
+export interface VoiceActivationActions {
+  toggleMic: () => Promise<boolean>;
+  setMicEnabled: (enabled: boolean) => Promise<boolean>;
+  getStatus: () => Promise<VoiceActivationStatus>;
+  simulateWakeWord: (phrase?: string) => Promise<{ success: boolean }>;
+  onStatusChanged: (callback: (status: VoiceActivationStatus) => void) => () => void;
+  onWakeWordDetected: (callback: (data: WakeWordDetectionData) => void) => () => void;
+}
+
 export interface DesktopAssistantAPI {
   version: string;
   platform: string;
   windowActions: WindowActions;
   lifecycle: LifecycleActions;
+  voiceActivation: VoiceActivationActions;
   getAppVersion: () => Promise<string>;
 }
 
@@ -33,13 +61,13 @@ const api: DesktopAssistantAPI = {
   lifecycle: {
     setState: (state: 'sleeping' | 'awake') => ipcRenderer.invoke('lifecycle:set-state', state),
     getState: () => ipcRenderer.invoke('lifecycle:get-state'),
-    onGoToSleep: (callback: () => void) => {
-      const handler = () => callback();
+    onGoToSleep: (callback: (info?: { voiceActivated?: boolean }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, info?: { voiceActivated?: boolean }) => callback(info);
       ipcRenderer.on('companion:go-to-sleep', handler);
       return () => ipcRenderer.removeListener('companion:go-to-sleep', handler);
     },
-    onWakeUp: (callback: () => void) => {
-      const handler = () => callback();
+    onWakeUp: (callback: (info?: { voiceActivated?: boolean }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, info?: { voiceActivated?: boolean }) => callback(info);
       ipcRenderer.on('companion:wake-up', handler);
       return () => ipcRenderer.removeListener('companion:wake-up', handler);
     },
@@ -71,6 +99,22 @@ const api: DesktopAssistantAPI = {
       const handler = () => callback();
       ipcRenderer.on('companion:go-to-sleep', handler);
       return () => ipcRenderer.removeListener('companion:go-to-sleep', handler);
+    },
+  },
+  voiceActivation: {
+    toggleMic: () => ipcRenderer.invoke('voice:toggle-mic'),
+    setMicEnabled: (enabled: boolean) => ipcRenderer.invoke('voice:set-mic-enabled', enabled),
+    getStatus: () => ipcRenderer.invoke('voice:get-status'),
+    simulateWakeWord: (phrase?: string) => ipcRenderer.invoke('voice:simulate-wake-word', phrase),
+    onStatusChanged: (callback: (status: VoiceActivationStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: VoiceActivationStatus) => callback(status);
+      ipcRenderer.on('voice:status-changed', handler);
+      return () => ipcRenderer.removeListener('voice:status-changed', handler);
+    },
+    onWakeWordDetected: (callback: (data: WakeWordDetectionData) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: WakeWordDetectionData) => callback(data);
+      ipcRenderer.on('voice:wake-word-detected', handler);
+      return () => ipcRenderer.removeListener('voice:wake-word-detected', handler);
     },
   },
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),

@@ -2,10 +2,11 @@ import React from 'react';
 
 export interface MicToggleProps {
   isEnabled: boolean;
+  isListening?: boolean;
   onToggle: () => void;
 }
 
-export const MicToggle: React.FC<MicToggleProps> = ({ isEnabled, onToggle }) => {
+export const MicToggle: React.FC<MicToggleProps> = ({ isEnabled, isListening, onToggle }) => {
   const statusLabel = isEnabled ? 'Voice activation: ON' : 'Voice activation: OFF';
   const tooltipText = isEnabled
     ? 'Voice activation is enabled (Click to mute)'
@@ -15,13 +16,13 @@ export const MicToggle: React.FC<MicToggleProps> = ({ isEnabled, onToggle }) => 
     <div className="mic-toggle-wrapper">
       <button
         type="button"
-        className={`mic-toggle-btn ${isEnabled ? 'enabled' : 'disabled'}`}
+        className={`mic-toggle-btn ${isEnabled ? 'enabled' : 'disabled'} ${isListening ? 'listening' : ''}`}
         onClick={onToggle}
         aria-pressed={isEnabled}
         aria-label={statusLabel}
         title={tooltipText}
       >
-        <span className="mic-indicator-dot" />
+        <span className={`mic-indicator-dot ${isListening ? 'listening-active' : ''}`} />
         <svg
           className="mic-icon"
           viewBox="0 0 24 24"
